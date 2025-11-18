@@ -17,7 +17,7 @@ from typing import Dict, Optional
 
 import tinytuya
 from dotenv import load_dotenv
-from pysolarmanv5 import PySolarmanV5, V5FrameError
+from pysolarmanv5 import PySolarmanV5, V5FrameError, NoSocketAvailableError
 
 # Завантаження конфігурації з .env файлу
 load_dotenv()
@@ -81,6 +81,14 @@ class DeyeInverter:
 
     def __init__(self):
         """Ініціалізація клієнта Deye інвертора."""
+        self.client = None
+        self._connect()
+        logger.info(
+            f"Deye інвертор: підключення до {LOGGER_IP}:{LOGGER_PORT} (SN: {LOGGER_SN})"
+        )
+
+    def _connect(self):
+        """Створює нове з'єднання з інвертором."""
         self.client = PySolarmanV5(
             address=LOGGER_IP,
             serial=LOGGER_SN,
@@ -89,9 +97,17 @@ class DeyeInverter:
             socket_timeout=CONNECTION_TIMEOUT_SEC,
             verbose=False,
         )
-        logger.info(
-            f"Deye інвертор: підключення до {LOGGER_IP}:{LOGGER_PORT} (SN: {LOGGER_SN})"
-        )
+
+    def reconnect(self):
+        """Перепідключається до інвертора."""
+        logger.warning("Спроба перепідключення до Deye інвертора...")
+        try:
+            if self.client:
+                self.disconnect()
+        except Exception:
+            pass  # Ігноруємо помилки при закритті
+        self._connect()
+        logger.info("Перепідключення успішне")
 
     def read_registers(self, start: int, quantity: int) -> list[int]:
         """
@@ -120,6 +136,19 @@ class DeyeInverter:
                         f"{len(values)} != {quantity}"
                     )
                 return values
+            except NoSocketAvailableError as exc:
+                # З'єднання закрите - намагаємося перепідключитись
+                last_exc = exc
+                if attempt < MAX_ATTEMPTS - 1:
+                    logger.warning(
+                        f"З'єднання закрите. Спроба {attempt + 1}/{MAX_ATTEMPTS} перепідключення..."
+                    )
+                    try:
+                        self.reconnect()
+                        time.sleep(RETRY_DELAY_SEC)
+                    except Exception as reconnect_exc:
+                        logger.error(f"Помилка перепідключення: {reconnect_exc}")
+                        time.sleep(RETRY_DELAY_SEC)
             except V5FrameError as exc:
                 last_exc = exc
                 if attempt < MAX_ATTEMPTS - 1:
@@ -289,6 +318,10 @@ class FeyreeCharger:
         """
         try:
             logger.info("Спроба вимкнути зарядку Feyree")
+
+            # Зупинка зарядки (DPS 123 = False - ключова команда для зупинки)
+            self.device.set_value(123, False)
+            time.sleep(0.5)
 
             # Вимкнення головного перемикача (DPS 18 = switch)
             result = self.device.set_value(FEYREE_SWITCH_DPS, False)
@@ -568,6 +601,9 @@ def control_loop() -> None:
                     if status_after:
                         charger.display_device_status(status_after, prefix="[ПІСЛЯ]")
 
+            except NoSocketAvailableError as e:
+                logger.error(f"З'єднання з інвертором закрите: {e}")
+                logger.info("Спроба перепідключення в наступній ітерації...")
             except V5FrameError as e:
                 logger.error(f"Помилка зв'язку з інвертором: {e}")
             except Exception as e:

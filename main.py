@@ -50,11 +50,14 @@ FEYREE_LOCAL_KEY = os.getenv("FEYREE_LOCAL_KEY", "")
 FEYREE_VERSION = os.getenv("FEYREE_VERSION", "3.3")
 
 # Feyree DPS коди (Data Point System)
-FEYREE_SWITCH_DPS = os.getenv("FEYREE_SWITCH_DPS", "18")  # DPS для ВКЛ/ВИКЛ
+FEYREE_SWITCH_DPS = os.getenv("FEYREE_SWITCH_DPS", "18")  # DPS для ВВІМК/ВИМК
 FEYREE_MODE_DPS = os.getenv("FEYREE_MODE_DPS", "14")  # DPS для режиму роботи
 FEYREE_CHARGE_NOW_MODE = os.getenv(
     "FEYREE_CHARGE_NOW_MODE", "charge_now"
 )  # Режим "заряджати зараз"
+# DPS 123 - це ключова команда для старту зарядки (True = start, False = stop)
+# DPS 101 - статус зарядки ("finish", "charing" [з опечаткою від Tuya])
+# DPS 124 - статус режиму ("CloseCharging", тощо)
 
 # Логіка керування
 SOC_THRESHOLD = float(os.getenv("SOC_THRESHOLD", "90"))
@@ -246,30 +249,28 @@ class FeyreeCharger:
         try:
             logger.info(f"Спроба увімкнути зарядку Feyree на {current_a}A")
 
-            # Крок 1: Встановлюємо режим "charge_now" (заряджати зараз)
-            logger.debug(
-                f"Встановлення режиму роботи: DPS {FEYREE_MODE_DPS} = {FEYREE_CHARGE_NOW_MODE}"
-            )
-            mode_result = self.device.set_value(FEYREE_MODE_DPS, FEYREE_CHARGE_NOW_MODE)
-
-            if not mode_result:
-                logger.warning(
-                    f"Не вдалося встановити режим роботи (DPS {FEYREE_MODE_DPS})"
-                )
-
-            # Крок 2: Увімкнення головного перемикача (DPS 18 = switch)
-            logger.debug(f"Увімкнення зарядки: DPS {FEYREE_SWITCH_DPS} = True")
+            # Увімкнення перемикача
             switch_result = self.device.set_value(FEYREE_SWITCH_DPS, True)
-
-            if switch_result:
-                logger.info(f"✓ Зарядка Feyree УВІМКНЕНА ({current_a}A)")
-                self.current_state = True
-                return True
-            else:
-                logger.warning(
-                    f"Не вдалося увімкнути зарядку (DPS {FEYREE_SWITCH_DPS})"
-                )
+            if not switch_result:
+                logger.warning(f"Не вдалося увімкнути перемикач (DPS {FEYREE_SWITCH_DPS})")
                 return False
+            
+            time.sleep(0.5)
+
+            # Встановлення режиму charge_now
+            self.device.set_value(FEYREE_MODE_DPS, FEYREE_CHARGE_NOW_MODE)
+            time.sleep(0.5)
+
+            # Активація зарядки (DPS 123 = True - ключова команда для старту)
+            self.device.set_value("123", True)
+            time.sleep(0.5)
+
+            # DPS 10 (додатковий параметр)
+            self.device.set_value("10", 1)
+
+            logger.info(f"Зарядка Feyree УВІМКНЕНА ({current_a}A)")
+            self.current_state = True
+            return True
 
         except Exception as e:
             logger.error(f"Помилка увімкнення зарядки Feyree: {e}")
@@ -286,11 +287,10 @@ class FeyreeCharger:
             logger.info("Спроба вимкнути зарядку Feyree")
 
             # Вимкнення головного перемикача (DPS 18 = switch)
-            logger.debug(f"Вимкнення зарядки: DPS {FEYREE_SWITCH_DPS} = False")
             result = self.device.set_value(FEYREE_SWITCH_DPS, False)
 
             if result:
-                logger.info("✓ Зарядка Feyree ВИМКНЕНА")
+                logger.info("Зарядка Feyree ВИМКНЕНА")
                 self.current_state = False
                 return True
             else:
@@ -300,6 +300,65 @@ class FeyreeCharger:
         except Exception as e:
             logger.error(f"Помилка вимкнення зарядки Feyree: {e}")
             return False
+
+    def display_device_status(self, status: Optional[Dict], prefix: str = ""):
+        """
+        Відображає детальну інформацію про стан пристрою.
+
+        Args:
+            status: Словник зі станом пристрою
+            prefix: Префікс для логування (напр. "ДО" або "ПІСЛЯ")
+        """
+        if not status or "dps" not in status:
+            logger.warning(f"{prefix} Статус недоступний")
+            return
+
+        dps = status.get("dps", {})
+        
+        logger.info(f"{prefix} Стан пристрою Feyree:")
+        
+        # Основні DPS коди
+        switch_state = dps.get("18", None)
+        work_mode = dps.get("14", None)
+        work_state = dps.get("3", None)  # ВАЖЛИВО: це реальний стан зарядки!
+        
+        # Додаткові важливі коди зі snapshot.json
+        charge_status = dps.get("101", None)  # finish/charging/тощо
+        energy_kwh = dps.get("102", None)  # енергія в Втг
+        current_a = dps.get("114", None)  # струм
+        max_current = dps.get("115", None)  # макс струм
+        charging_time = dps.get("120", None)  # час зарядки
+        charge_mode_status = dps.get("124", None)  # статус режиму зарядки
+        
+        # Виводимо основну інформацію
+        if work_state is not None:
+            logger.info(f"  └─ DPS 3 (work_state): {work_state}")
+        
+        if switch_state is not None:
+            logger.info(f"  └─ DPS 18 (switch): {'ВВІМК' if switch_state else 'ВИМК'}")
+        
+        if work_mode is not None:
+            logger.info(f"  └─ DPS 14 (work_mode): {work_mode}")
+        
+        if charge_status is not None:
+            logger.info(f"  └─ DPS 101 (charge_status): {charge_status}")
+        
+        if charge_mode_status is not None:
+            logger.info(f"  └─ DPS 124 (mode_status): {charge_mode_status}")
+        
+        if current_a is not None:
+            logger.info(f"  └─ DPS 114 (current): {current_a}A")
+        
+        if max_current is not None:
+            logger.info(f"  └─ DPS 115 (max_current): {max_current}A")
+        
+        if energy_kwh is not None:
+            # Згідно з devices.json, scale=3, тому ділимо на 1000
+            energy_display = energy_kwh / 1000.0
+            logger.info(f"  └─ DPS 102 (energy): {energy_display:.3f} kWh")
+        
+        if charging_time is not None:
+            logger.info(f"  └─ DPS 120 (time): {charging_time}")
 
     def should_charge(
         self, battery_soc: float, grid_power: float, grid_direction: str
@@ -342,8 +401,10 @@ def control_loop():
     Безкінечний цикл, що:
     1. Зчитує стан батареї та мережі з Deye інвертора
     2. Приймає рішення про увімкнення/вимкнення зарядки
-    3. Виконує відповідні команди
-    4. Чекає CHECK_INTERVAL_SEC перед наступною перевіркою
+    3. Отримує поточний стан Feyree перед виконанням команди
+    4. Виконує відповідні команди (якщо потрібно)
+    5. Отримує стан Feyree після виконання команди
+    6. Чекає CHECK_INTERVAL_SEC перед наступною перевіркою
     """
     logger.info("=" * 60)
     logger.info("Запуск системи керування зарядкою Feyree EV")
@@ -376,13 +437,13 @@ def control_loop():
     try:
         logger.info("Тестове підключення до Deye інвертора...")
         test_state = inverter.get_battery_and_grid_state()
-        logger.info(f"✓ Deye інвертор: Підключення УСПІШНЕ")
+        logger.info(f"Deye інвертор: Підключення УСПІШНЕ")
         logger.info(f"  Поточний SOC: {test_state['battery_soc_pct']:.1f}%")
         logger.info(
             f"  Потужність мережі: {test_state['grid_power_w']:.0f}W ({test_state['grid_direction']})"
         )
     except Exception as e:
-        logger.error(f"✗ Deye інвертор: Підключення НЕВДАЛЕ - {e}")
+        logger.error(f"Deye інвертор: Підключення НЕВДАЛЕ - {e}")
         logger.error("Неможливо продовжити роботу без доступу до інвертора")
         sys.exit(1)
 
@@ -391,24 +452,24 @@ def control_loop():
         logger.info("Тестове підключення до Feyree зарядки...")
         test_status = charger.get_status()
         if test_status:
-            logger.info(f"✓ Feyree зарядка: Підключення УСПІШНЕ")
+            logger.info(f"Feyree зарядка: Підключення УСПІШНЕ")
             if "dps" in test_status:
                 # Показуємо поточний стан головного перемикача (якщо доступний)
                 switch_state = test_status["dps"].get(FEYREE_SWITCH_DPS, "невідомо")
                 work_mode = test_status["dps"].get(FEYREE_MODE_DPS, "невідомо")
-                logger.info(f"  Стан: {'ВКЛ' if switch_state else 'ВИКЛ'}")
+                logger.info(f"  Стан: {'ВВІМК' if switch_state else 'ВИМК'}")
                 logger.info(f"  Режим: {work_mode}")
         else:
             logger.warning(
-                f"⚠ Feyree зарядка: Підключення встановлено, але не отримано статус"
+                f"Feyree зарядка: Підключення встановлено, але не отримано статус"
             )
             logger.warning("Продовжуємо роботу, але можливі проблеми з керуванням")
     except Exception as e:
-        logger.error(f"✗ Feyree зарядка: Підключення НЕВДАЛЕ - {e}")
+        logger.error(f"Feyree зарядка: Підключення НЕВДАЛЕ - {e}")
         logger.error("Неможливо продовжити роботу без доступу до зарядки")
         sys.exit(1)
 
-    logger.info("✓ Всі пристрої підключені успішно. Запуск основного циклу...")
+    logger.info("Всі пристрої підключені успішно. Запуск основного циклу...")
 
     # Основний цикл
     iteration = 0
@@ -438,24 +499,56 @@ def control_loop():
 
                 logger.info(f"Аналіз умов зарядки:")
                 logger.info(
-                    f"  - SOC >= {SOC_THRESHOLD}%: {'✓' if battery_soc >= SOC_THRESHOLD else '✗'}"
+                    f"  - SOC >= {SOC_THRESHOLD}%: {'ТАК' if battery_soc >= SOC_THRESHOLD else 'НІ'}"
                 )
                 logger.info(
-                    f"  - Імпорт < {GRID_IMPORT_THRESHOLD}W або експорт: {'✓' if (grid_direction != 'import' or grid_power < GRID_IMPORT_THRESHOLD) else '✗'}"
+                    f"  - Імпорт < {GRID_IMPORT_THRESHOLD}W або експорт: {'ТАК' if (grid_direction != 'import' or grid_power < GRID_IMPORT_THRESHOLD) else 'НІ'}"
                 )
                 logger.info(
                     f"Рішення: {'УВІМКНУТИ зарядку' if should_charge else 'ВИМКНУТИ зарядку'}"
                 )
 
-                # Крок 3: Виконання команди (тільки якщо стан змінився)
-                if should_charge and charger.current_state != True:
-                    charger.turn_on(CHARGING_CURRENT_A)
-                elif not should_charge and charger.current_state != False:
-                    charger.turn_off()
+                # Крок 3: Отримання поточного стану перед виконанням команди
+                logger.info("Отримання стану пристрою...")
+                status_before = charger.get_status()
+                mode_status = None
+                if status_before and "dps" in status_before:
+                    charger.display_device_status(status_before, prefix="[ДО]")
+                    # Оновлюємо current_state з реального стану пристрою
+                    actual_state = status_before.get("dps", {}).get("18", None)
+                    mode_status = status_before.get("dps", {}).get("124", None)
+                    if actual_state is not None:
+                        charger.current_state = actual_state
+
+                # Крок 4: Виконання команди
+                command_executed = False
+                
+                # Визначаємо чи потрібно виконати команду
+                need_turn_on = should_charge and (
+                    charger.current_state != True or 
+                    mode_status == "CloseCharging"  # Навіть якщо switch=True, але зарядка закрита
+                )
+                need_turn_off = not should_charge and charger.current_state != False
+                
+                if need_turn_on:
+                    if mode_status == "CloseCharging":
+                        logger.info("Зарядка ЗАКРИТА (DPS 124 = CloseCharging), спроба ВІДКРИТИ...")
+                    command_executed = charger.turn_on(CHARGING_CURRENT_A)
+                elif need_turn_off:
+                    command_executed = charger.turn_off()
                 else:
                     logger.info(
-                        f"Стан зарядки не змінився (залишається: {'ВКЛ' if charger.current_state else 'ВИКЛ'})"
+                        f"Стан зарядки не змінився (залишається: {'ВВІМК' if charger.current_state else 'ВИМК'})"
                     )
+
+                # Крок 5: Отримання стану після виконання команди
+                if command_executed:
+                    # Невелика затримка для застосування команди
+                    time.sleep(2)
+                    logger.info("Перевірка стану після виконання команди...")
+                    status_after = charger.get_status()
+                    if status_after:
+                        charger.display_device_status(status_after, prefix="[ПІСЛЯ]")
 
             except V5FrameError as e:
                 logger.error(f"Помилка зв'язку з інвертором: {e}")

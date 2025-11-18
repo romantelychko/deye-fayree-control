@@ -2,7 +2,25 @@
 
 Для керування зарядкою Feyree через локальну мережу потрібно отримати `DEVICE_ID` та `LOCAL_KEY` з платформи Tuya.
 
-⚠️ Важливо: Smart Life ≠ Tuya IoT Platform
+## Зміст
+
+- [Важливо: Smart Life ≠ Tuya IoT Platform](#важливо-smart-life--tuya-iot-platform)
+- [Крок 1: Налаштування Tuya IoT Platform](#крок-1-налаштування-tuya-iot-platform)
+- [Крок 2: Створення тимчасового віртуального оточення](#крок-2-створення-тимчасового-віртуального-оточення)
+- [Крок 3: Встановлення tinytuya](#крок-3-встановлення-tinytuya)
+- [Крок 4: Запуск майстра налаштування](#крок-4-запуск-майстра-налаштування)
+- [Крок 5: Знайти Device ID та Local Key](#крок-5-знайти-device-id-та-local-key)
+  - [Розуміння DPS кодів](#розуміння-dps-кодів)
+- [Крок 6: Очищення тимчасового оточення](#крок-6-очищення-тимчасового-оточення)
+- [Налаштування .env файлу](#налаштування-env-файлу)
+- [Перевірка налаштування](#перевірка-налаштування)
+- [Усунення проблем](#усунення-проблем)
+- [Додаткові ресурси](#додаткові-ресурси)
+- [Альтернатива: Використання розумної розетки](#альтернатива-використання-розумної-розетки)
+
+---
+
+## Важливо: Smart Life ≠ Tuya IoT Platform
 
 **Якщо ви використовуєте додаток Smart Life:**
 - Ваш акаунт в **Smart Life** (споживацький додаток) - це **ОКРЕМИЙ** акаунт
@@ -12,8 +30,6 @@
 - Після прив'язки всі пристрої зі Smart Life будуть доступні в Cloud Project
 
 ### Крок 1: Налаштування Tuya IoT Platform
-
-Потрібно
 
 1. **Створити обліковий запис на Tuya IoT Platform**
    - Перейдіть на https://iot.tuya.com/
@@ -111,17 +127,36 @@ Wizard створить файл `devices.json` з усіма пристроям
 - `id` - це ваш **DEVICE_ID**
 - `key` - це ваш **LOCAL_KEY**
 
-**Також зверніть увагу на `mapping`** - це DPS коди вашого пристрою:
-- Якщо ви бачите `"18": {"code": "switch", "type": "Boolean"}` - це DPS для вмикання/вимикання
-- Якщо ви бачите `"14": {"code": "work_mode", "type": "Enum"}` - це DPS для режиму роботи
+### Розуміння DPS кодів
 
-Ці значення вже налаштовані за замовчуванням у `.env` файлі як:
+**DPS (Data Point System)** - це коди керування пристроєм Tuya. У файлі `devices.json` ви побачите секцію `mapping`:
+
+```json
+"mapping": {
+  "18": {"code": "switch", "type": "Boolean"},
+  "14": {"code": "work_mode", "type": "Enum"},
+  "101": {"code": "charge_status", "type": "Enum"},
+  "114": {"code": "current", "type": "Integer"},
+  "123": {"code": "charge_start", "type": "Boolean"}
+}
+```
+
+**Основні DPS коди для Feyree:**
+- **DPS 18** (`switch`) - Головний перемикач ВВІМК/ВИМК
+- **DPS 14** (`work_mode`) - Режим роботи (`charge_now`, `charge_pct`, тощо)
+- **DPS 101** (`charge_status`) - Статус зарядки (`charing`, `finish`)
+- **DPS 114** (`current`) - Поточна сила струму (A)
+- **DPS 123** (`charge_start`) - Команда старту/зупинки зарядки
+- **DPS 124** (`mode_status`) - Статус режиму (`CloseCharging`, тощо)
+
+Ці значення вже налаштовані за замовчуванням у `.env.example`:
 ```env
 FEYREE_SWITCH_DPS=18
 FEYREE_MODE_DPS=14
+FEYREE_CHARGE_NOW_MODE=charge_now
 ```
 
-Якщо ваш пристрій має інші DPS коди, змініть їх у `.env` файлі.
+⚠️ **Важливо:** Якщо ваш пристрій має інші DPS коди, змініть їх у `.env` файлі відповідно до вашого `devices.json`.
 
 ### Крок 6: Очищення тимчасового оточення
 
@@ -139,43 +174,60 @@ rm -rf /tmp/deye-fayree-control-venv
 
 ## Налаштування .env файлу
 
-Після отримання ключів, відкрийте `.env` файл і оновіть:
+Після отримання ключів, створіть `.env` файл з `.env.example` та оновіть:
+
+```bash
+# В директорії проекту
+cp .env.example .env
+nano .env  # або vim, gedit, тощо
+```
+
+Оновіть отримані параметри:
 
 ```env
-FEYREE_DEVICE_ID=0000000000000000000000
-FEYREE_LOCAL_KEY=a1b2c3d4e5f67890
-FEYREE_VERSION=3.3
+# Параметри отримані через tinytuya wizard
+FEYREE_IP=172.16.32.48                      # IP з devices.json або ваша IP
+FEYREE_DEVICE_ID=0000000000000000000000    # "id" з devices.json
+FEYREE_LOCAL_KEY=a1b2c3d4e5f67890          # "key" з devices.json
+FEYREE_VERSION=3.3                          # "version" з devices.json (зазвичай 3.3)
+```
+
+Також не забудьте налаштувати параметри Deye інвертора:
+
+```env
+LOGGER_IP=172.16.32.50    # IP вашого Data Logger
+LOGGER_SN=0000000000      # Серійний номер (10 цифр)
 ```
 
 ## Перевірка налаштування
 
-Після налаштування, запустіть:
+Після налаштування `.env` файлу, запустіть систему:
 
 ```bash
-# Створення тимчасового віртуального оточення
-python3 -m venv /tmp/deye-fayree-control-venv
+# Через Makefile (рекомендовано)
+make build
+make up
+make logs
 
-# Активація віртуального оточення
-source /tmp/deye-fayree-control-venv/bin/activate
-
-# Встановлення пакетів
-pip install -r requirements.txt
-
-# Запустити скрипт
-python main.py
+# Або через Docker Compose
+docker compose up -d
+docker compose logs -f
 ```
 
-Якщо все правильно, ви побачите:
+Якщо все правильно налаштовано, ви побачите в логах:
 
 ```
-2024-01-15 12:30:00 - INFO - Feyree зарядка: підключення до 172.16.32.48 (ID: 0000000000000000000000)
+INFO - Deye інвертор: Підключення УСПІШНЕ
+INFO - Feyree зарядка: Підключення УСПІШНЕ
+INFO - Всі пристрої підключені успішно. Запуск основного циклу...
 ```
 
-Якщо є помилки:
-- Перевірте що IP адреса правильна
-- Перевірте що DEVICE_ID та LOCAL_KEY правильні
-- Спробуйте іншу версію протоколу (3.1, 3.3, 3.4)
-- Переконайтесь що зарядка в тій самій мережі
+Якщо є помилки підключення до Feyree:
+- Перевірте що IP адреса правильна: `ping <FEYREE_IP>`
+- Перевірте що DEVICE_ID та LOCAL_KEY правильні (отримані через wizard)
+- Спробуйте іншу версію протоколу в `.env`: `FEYREE_VERSION=3.1` або `3.4`
+- Переконайтесь що зарядка в тій самій локальній мережі
+- Перевірте що зарядка увімкнена та підключена до WiFi
 
 ## Усунення проблем
 
@@ -203,9 +255,16 @@ python main.py
 
 ## Додаткові ресурси
 
-- Офіційна документація Tuya: https://developer.tuya.com/
-- tinytuya GitHub: https://github.com/jasonacox/tinytuya
-- Спільнота Home Assistant Tuya: https://www.home-assistant.io/integrations/tuya/
+- **Офіційна документація Tuya:** https://developer.tuya.com/
+- **tinytuya GitHub:** https://github.com/jasonacox/tinytuya
+  - Детальна документація про роботу з Tuya пристроями
+  - Приклади коду та troubleshooting
+- **Tuya IoT Platform:** https://iot.tuya.com/
+  - Керування Cloud Projects
+  - Перегляд пристроїв та їх DPS кодів
+- **Smart Life додаток:** (iOS/Android)
+  - Первинне налаштування пристроїв
+  - Перевірка підключення до WiFi
 
 ## Альтернатива: Використання розумної розетки
 

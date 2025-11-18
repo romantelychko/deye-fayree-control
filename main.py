@@ -50,8 +50,8 @@ FEYREE_LOCAL_KEY = os.getenv("FEYREE_LOCAL_KEY", "")
 FEYREE_VERSION = os.getenv("FEYREE_VERSION", "3.3")
 
 # Feyree DPS коди (Data Point System)
-FEYREE_SWITCH_DPS = os.getenv("FEYREE_SWITCH_DPS", "18")  # DPS для ВВІМК/ВИМК
-FEYREE_MODE_DPS = os.getenv("FEYREE_MODE_DPS", "14")  # DPS для режиму роботи
+FEYREE_SWITCH_DPS = int(os.getenv("FEYREE_SWITCH_DPS", "18"))  # DPS для ВВІМК/ВИМК
+FEYREE_MODE_DPS = int(os.getenv("FEYREE_MODE_DPS", "14"))  # DPS для режиму роботи
 FEYREE_CHARGE_NOW_MODE = os.getenv(
     "FEYREE_CHARGE_NOW_MODE", "charge_now"
 )  # Режим "заряджати зараз"
@@ -130,14 +130,16 @@ class DeyeInverter:
 
         # Якщо всі спроби не вдалися
         logger.error(f"Не вдалося зчитати регістри після {MAX_ATTEMPTS} спроб")
-        raise last_exc
+        if last_exc:
+            raise last_exc
+        raise V5FrameError("Не вдалося зчитати регістри")
 
     @staticmethod
     def as_signed16(value: int) -> int:
         """Перетворює 16-бітне беззнакове значення у signed (для потужностей)."""
         return value - 0x10000 if value >= 0x8000 else value
 
-    def get_battery_and_grid_state(self) -> Dict[str, str]:
+    def get_battery_and_grid_state(self) -> Dict[str, float | str]:
         """
         Зчитує необхідні дані про батарею та мережу.
 
@@ -259,16 +261,16 @@ class FeyreeCharger:
 
             time.sleep(0.5)
 
-            # Встановлення режиму charge_now
-            self.device.set_value(FEYREE_MODE_DPS, FEYREE_CHARGE_NOW_MODE)
+            # Встановлення режиму charge_now (DPS 14 - це Enum: "charge_now", "charge_pct", etc.)
+            self.device.set_value(FEYREE_MODE_DPS, FEYREE_CHARGE_NOW_MODE)  # type: ignore[arg-type]
             time.sleep(0.5)
 
             # Активація зарядки (DPS 123 = True - ключова команда для старту)
-            self.device.set_value("123", True)
+            self.device.set_value(123, True)
             time.sleep(0.5)
 
             # DPS 10 (додатковий параметр)
-            self.device.set_value("10", 1)
+            self.device.set_value(10, 1)
 
             logger.info(f"Зарядка Feyree УВІМКНЕНА ({current_a}A)")
             self.current_state = True
@@ -320,8 +322,8 @@ class FeyreeCharger:
         logger.info(f"{prefix} Стан пристрою Feyree:")
 
         # Основні DPS коди
-        switch_state = dps.get("18", None)
-        work_mode = dps.get("14", None)
+        switch_state = dps.get(str(FEYREE_SWITCH_DPS), None)
+        work_mode = dps.get(str(FEYREE_MODE_DPS), None)
         work_state = dps.get("3", None)  # ВАЖЛИВО: це реальний стан зарядки!
 
         # Додаткові важливі коди зі snapshot.json
@@ -337,10 +339,12 @@ class FeyreeCharger:
             logger.info(f"  └─ DPS 3 (work_state): {work_state}")
 
         if switch_state is not None:
-            logger.info(f"  └─ DPS 18 (switch): {'ВВІМК' if switch_state else 'ВИМК'}")
+            logger.info(
+                f"  └─ DPS {FEYREE_SWITCH_DPS} (switch): {'ВВІМК' if switch_state else 'ВИМК'}"
+            )
 
         if work_mode is not None:
-            logger.info(f"  └─ DPS 14 (work_mode): {work_mode}")
+            logger.info(f"  └─ DPS {FEYREE_MODE_DPS} (work_mode): {work_mode}")
 
         if charge_status is not None:
             logger.info(f"  └─ DPS 101 (charge_status): {charge_status}")
@@ -356,7 +360,8 @@ class FeyreeCharger:
 
         if energy_kwh is not None:
             # Згідно з devices.json, scale=3, тому ділимо на 1000
-            energy_display = energy_kwh / 1000.0
+            # DPS 102 повертає integer, конвертуємо в float
+            energy_display: float = float(energy_kwh) / 1000.0
             logger.info(f"  └─ DPS 102 (energy): {energy_display:.3f} kWh")
 
         if charging_time is not None:
@@ -396,7 +401,7 @@ class FeyreeCharger:
 # ============================================================
 
 
-def control_loop():
+def control_loop() -> None:
     """
     Основний цикл керування зарядкою EV.
 
@@ -411,7 +416,7 @@ def control_loop():
     logger.info("=" * 60)
     logger.info("Запуск системи керування зарядкою Feyree EV")
     logger.info("=" * 60)
-    logger.info(f"Порогові значення:")
+    logger.info("Порогові значення:")
     logger.info(f"  - Мінімальний SOC для зарядки: {SOC_THRESHOLD}%")
     logger.info(f"  - Максимальний імпорт з мережі: {GRID_IMPORT_THRESHOLD}W")
     logger.info(f"  - Інтервал перевірки: {CHECK_INTERVAL_SEC} сек")
@@ -439,7 +444,7 @@ def control_loop():
     try:
         logger.info("Тестове підключення до Deye інвертора...")
         test_state = inverter.get_battery_and_grid_state()
-        logger.info(f"Deye інвертор: Підключення УСПІШНЕ")
+        logger.info("Deye інвертор: Підключення УСПІШНЕ")
         logger.info(f"  Поточний SOC: {test_state['battery_soc_pct']:.1f}%")
         logger.info(
             f"  Потужність мережі: {test_state['grid_power_w']:.0f}W ({test_state['grid_direction']})"
@@ -454,16 +459,18 @@ def control_loop():
         logger.info("Тестове підключення до Feyree зарядки...")
         test_status = charger.get_status()
         if test_status:
-            logger.info(f"Feyree зарядка: Підключення УСПІШНЕ")
+            logger.info("Feyree зарядка: Підключення УСПІШНЕ")
             if "dps" in test_status:
                 # Показуємо поточний стан головного перемикача (якщо доступний)
-                switch_state = test_status["dps"].get(FEYREE_SWITCH_DPS, "невідомо")
-                work_mode = test_status["dps"].get(FEYREE_MODE_DPS, "невідомо")
+                switch_state = test_status["dps"].get(
+                    str(FEYREE_SWITCH_DPS), "невідомо"
+                )
+                work_mode = test_status["dps"].get(str(FEYREE_MODE_DPS), "невідомо")
                 logger.info(f"  Стан: {'ВВІМК' if switch_state else 'ВИМК'}")
                 logger.info(f"  Режим: {work_mode}")
         else:
             logger.warning(
-                f"Feyree зарядка: Підключення встановлено, але не отримано статус"
+                "Feyree зарядка: Підключення встановлено, але не отримано статус"
             )
             logger.warning("Продовжуємо роботу, але можливі проблеми з керуванням")
     except Exception as e:
@@ -488,9 +495,9 @@ def control_loop():
 
                 battery_soc: float = float(state["battery_soc_pct"])
                 grid_power: float = float(state["grid_power_w"])
-                grid_direction: str = state["grid_direction"]
+                grid_direction: str = str(state["grid_direction"])
 
-                logger.info(f"Стан системи:")
+                logger.info("Стан системи:")
                 logger.info(f"  - Батарея: {battery_soc:.1f}%")
                 logger.info(f"  - Мережа: {grid_power:.0f}W ({grid_direction})")
 
@@ -499,7 +506,7 @@ def control_loop():
                     battery_soc, grid_power, grid_direction
                 )
 
-                logger.info(f"Аналіз умов зарядки:")
+                logger.info("Аналіз умов зарядки:")
                 logger.info(
                     f"  - SOC >= {SOC_THRESHOLD}%: {'ТАК' if battery_soc >= SOC_THRESHOLD else 'НІ'}"
                 )
@@ -517,7 +524,9 @@ def control_loop():
                 if status_before and "dps" in status_before:
                     charger.display_device_status(status_before, prefix="[ДО]")
                     # Оновлюємо current_state з реального стану пристрою
-                    actual_state = status_before.get("dps", {}).get("18", None)
+                    actual_state = status_before.get("dps", {}).get(
+                        str(FEYREE_SWITCH_DPS), None
+                    )
                     charge_status = status_before.get("dps", {}).get(
                         "101", None
                     )  # Реальний статус зарядки
@@ -585,7 +594,7 @@ def control_loop():
 # ============================================================
 
 
-def main():
+def main() -> None:
     """Основна точка входу програми."""
     try:
         control_loop()
